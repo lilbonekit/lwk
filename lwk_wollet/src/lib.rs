@@ -134,6 +134,7 @@ pub use crate::model::{
 };
 pub use crate::network::ElementsNetwork;
 pub use crate::pegin::fed_peg_script;
+pub use crate::pset_create::IssuanceRecipient;
 #[cfg(feature = "registry")]
 pub use crate::registry::RegistryAssetData;
 pub use crate::tx_details::{TxDetails, TxOpt, TxOutDetails, TxsOpt};
