@@ -8,6 +8,37 @@ use crate::{
     OutPoint, Pset, Script, Transaction, Wollet,
 };
 
+/// A recipient of newly issued asset units.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct IssuanceRecipient {
+    inner: lwk_wollet::IssuanceRecipient,
+}
+
+impl From<IssuanceRecipient> for lwk_wollet::IssuanceRecipient {
+    fn from(value: IssuanceRecipient) -> Self {
+        value.inner
+    }
+}
+
+#[wasm_bindgen]
+impl IssuanceRecipient {
+    /// Create an issuance recipient using the next wallet external address.
+    pub fn wallet(satoshi: u64) -> IssuanceRecipient {
+        IssuanceRecipient {
+            inner: lwk_wollet::IssuanceRecipient::wallet(satoshi),
+        }
+    }
+
+    /// Create an issuance recipient from an address.
+    #[wasm_bindgen(js_name = fromAddress)]
+    pub fn from_address(satoshi: u64, address: &Address) -> IssuanceRecipient {
+        IssuanceRecipient {
+            inner: lwk_wollet::IssuanceRecipient::from_address(satoshi, address.as_ref()),
+        }
+    }
+}
+
 /// A transaction builder
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -164,6 +195,29 @@ impl TxBuilder {
             .issue_asset(
                 asset_sats,
                 asset_receiver.map(Into::into),
+                token_sats,
+                token_receiver.map(Into::into),
+                contract.map(Into::into),
+            )?
+            .into())
+    }
+
+    /// Issue an asset and send issued units to recipients.
+    ///
+    /// Recipient amounts are summed to determine the issued asset amount.
+    #[wasm_bindgen(js_name = issueAssetToRecipients)]
+    pub fn issue_asset_to_recipients(
+        self,
+        asset_recipients: Vec<IssuanceRecipient>,
+        token_sats: u64,
+        token_receiver: Option<Address>,
+        contract: Option<Contract>,
+    ) -> Result<TxBuilder, Error> {
+        let asset_recipients = asset_recipients.into_iter().map(Into::into).collect();
+        Ok(self
+            .inner
+            .issue_asset_to_recipients(
+                asset_recipients,
                 token_sats,
                 token_receiver.map(Into::into),
                 contract.map(Into::into),
