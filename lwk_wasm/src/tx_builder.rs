@@ -4,20 +4,58 @@ use lwk_wollet::{elements, UnvalidatedRecipient, Validated};
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    liquidex::ValidatedLiquidexProposal, Address, AssetId, Contract, Error, Network, OutPoint,
-    Pset, Transaction, Wollet,
+    liquidex::ValidatedLiquidexProposal, Address, AssetId, Contract, Error, ExternalUtxo, Network,
+    OutPoint, Pset, Script, Transaction, Wollet,
 };
+
+/// A recipient of newly issued asset units.
+#[wasm_bindgen]
+#[derive(Debug)]
+pub struct IssuanceRecipient {
+    inner: lwk_wollet::IssuanceRecipient,
+}
+
+impl From<IssuanceRecipient> for lwk_wollet::IssuanceRecipient {
+    fn from(value: IssuanceRecipient) -> Self {
+        value.inner
+    }
+}
+
+#[wasm_bindgen]
+impl IssuanceRecipient {
+    /// Create an issuance recipient using the next wallet external address.
+    pub fn wallet(satoshi: u64) -> IssuanceRecipient {
+        IssuanceRecipient {
+            inner: lwk_wollet::IssuanceRecipient::wallet(satoshi),
+        }
+    }
+
+    /// Create an issuance recipient from an address.
+    #[wasm_bindgen(js_name = fromAddress)]
+    pub fn from_address(satoshi: u64, address: &Address) -> IssuanceRecipient {
+        IssuanceRecipient {
+            inner: lwk_wollet::IssuanceRecipient::from_address(satoshi, address.as_ref()),
+        }
+    }
+}
 
 /// A transaction builder
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct TxBuilder {
     inner: lwk_wollet::TxBuilder,
+    /// Per-input sequence overrides applied in `finish`. Only populated by `setInputSequence`.
+    /// Must be set after all other builder methods — those methods go through
+    /// `From<lwk_wollet::TxBuilder>` which resets this field to an empty vec.
+    input_sequences: Vec<(elements::OutPoint, elements::Sequence)>,
 }
 
 impl From<lwk_wollet::TxBuilder> for TxBuilder {
     fn from(value: lwk_wollet::TxBuilder) -> Self {
-        Self { inner: value }
+        Self {
+            inner: value,
+            input_sequences: vec![],
+        }
     }
 }
 
@@ -34,12 +72,38 @@ impl TxBuilder {
     pub fn new(network: &Network) -> TxBuilder {
         TxBuilder {
             inner: lwk_wollet::TxBuilder::new(network.into()),
+            input_sequences: vec![],
         }
     }
 
-    /// Build the transaction
+    /// Build the transaction, applying any per-input sequence overrides set via
+    /// `setInputSequence`.
     pub fn finish(self, wollet: &Wollet) -> Result<Pset, Error> {
-        Ok(self.inner.finish(wollet.as_ref())?.into())
+        let input_sequences = self.input_sequences;
+        let mut pset = self.inner.finish(wollet.as_ref())?;
+        for input in pset.inputs_mut() {
+            let op = elements::OutPoint::new(input.previous_txid, input.previous_output_index);
+            if let Some(seq) =
+                input_sequences.iter().find_map(|(o, s)| (*o == op).then_some(*s))
+            {
+                input.sequence = Some(seq);
+            }
+        }
+        Ok(pset.into())
+    }
+
+    /// Override the nSequence for a specific input identified by its outpoint.
+    ///
+    /// Must be called **after** all other builder methods, because those methods go through
+    /// `From<lwk_wollet::TxBuilder>` which resets the per-input sequence list to empty.
+    ///
+    /// Pass `0xFFFFFFFE` (ENABLE_LOCKTIME_NO_RBF) to enable absolute locktime without RBF —
+    /// required by Simplicity's `check_lock_height` jet (returns 0 when all inputs are final).
+    #[wasm_bindgen(js_name = setInputSequence)]
+    pub fn set_input_sequence(mut self, outpoint: &OutPoint, sequence: u32) -> TxBuilder {
+        self.input_sequences
+            .push((outpoint.into(), elements::Sequence::from_consensus(sequence)));
+        self
     }
 
     /// Build the transaction for AMP0
@@ -125,6 +189,39 @@ impl TxBuilder {
             .into())
     }
 
+    /// Add explicit output with an arbitrary script pubkey.
+    #[wasm_bindgen(js_name = addExplicitScriptOutput)]
+    pub fn add_explicit_script_output(
+        self,
+        script_pubkey: &Script,
+        satoshi: u64,
+        asset: &AssetId,
+    ) -> TxBuilder {
+        self.inner
+            .add_explicit_script_output(script_pubkey.as_ref().clone(), satoshi, (*asset).into())
+            .into()
+    }
+
+    /// Add an address-based output to the post-issuance output list.
+    ///
+    /// Like `addExplicitScriptOutput`, outputs are appended after all asset and issuance
+    /// outputs but before L-BTC change and fee, enabling precise vout ordering for covenant
+    /// transactions that depend on output indexes.
+    ///
+    /// Unlike `addExplicitScriptOutput`, a confidential `address` produces a blinded
+    /// output visible to the wallet; an unconfidential address produces an explicit one.
+    #[wasm_bindgen(js_name = addPostIssuanceRecipient)]
+    pub fn add_post_issuance_recipient(
+        self,
+        address: &Address,
+        satoshi: u64,
+        asset: &AssetId,
+    ) -> TxBuilder {
+        self.inner
+            .add_post_issuance_recipient(address.as_ref(), satoshi, (*asset).into())
+            .into()
+    }
+
     /// Issue an asset
     ///
     /// There will be `asset_sats` units of this asset that will be received by
@@ -154,6 +251,31 @@ impl TxBuilder {
                 token_sats,
                 token_receiver.map(Into::into),
                 contract.map(Into::into),
+            )?
+            .into())
+    }
+
+    /// Issue an asset and send issued units to recipients.
+    ///
+    /// Recipient amounts are summed to determine the issued asset amount.
+    #[wasm_bindgen(js_name = issueAssetToRecipients)]
+    pub fn issue_asset_to_recipients(
+        self,
+        asset_recipients: Vec<IssuanceRecipient>,
+        token_sats: u64,
+        token_receiver: Option<Address>,
+        contract: Option<Contract>,
+        input_outpoint: Option<OutPoint>,
+    ) -> Result<TxBuilder, Error> {
+        let asset_recipients = asset_recipients.into_iter().map(Into::into).collect();
+        Ok(self
+            .inner
+            .issue_asset_to_recipients_at_input(
+                asset_recipients,
+                token_sats,
+                token_receiver.map(Into::into),
+                contract.map(Into::into),
+                input_outpoint.map(Into::into),
             )?
             .into())
     }
@@ -205,6 +327,23 @@ impl TxBuilder {
         self.inner.set_wallet_utxos(outpoints).into()
     }
 
+    /// Set the exact order in which selected wallet and external inputs are added.
+    #[wasm_bindgen(js_name = setInputOrder)]
+    pub fn set_input_order(self, outpoints: Vec<OutPoint>) -> TxBuilder {
+        let outpoints: Vec<elements::OutPoint> = outpoints.into_iter().map(Into::into).collect();
+        self.inner.set_input_order(outpoints).into()
+    }
+
+    /// Adds external UTXOs
+    ///
+    /// Note: unblinded UTXOs with the same scriptpubkeys as the wallet, are considered external.
+    #[wasm_bindgen(js_name = addExternalUtxos)]
+    pub fn add_external_utxos(self, utxos: Vec<ExternalUtxo>) -> Result<TxBuilder, Error> {
+        let utxos: Vec<lwk_wollet::ExternalUtxo> =
+            utxos.iter().map(lwk_wollet::ExternalUtxo::from).collect();
+        Ok(self.inner.add_external_utxos(utxos)?.into())
+    }
+
     /// Return a string representation of the transaction builder (mostly for debugging)
     #[wasm_bindgen(js_name = toString)]
     pub fn to_string_js(&self) -> String {
@@ -240,6 +379,14 @@ impl TxBuilder {
     pub fn add_input_rangeproofs(self, add_rangeproofs: bool) -> TxBuilder {
         self.inner.add_input_rangeproofs(add_rangeproofs).into()
     }
+
+    /// Set the fallback locktime on the transaction as a block height.
+    #[wasm_bindgen(js_name = setFallbackLocktimeHeight)]
+    pub fn set_fallback_locktime_height(self, height: u32) -> Result<TxBuilder, Error> {
+        let locktime = elements::LockTime::from_height(height)
+            .map_err(|e| Error::Generic(e.to_string()))?;
+        Ok(self.inner.set_fallback_locktime(locktime).into())
+    }
 }
 
 impl Display for TxBuilder {
@@ -264,19 +411,19 @@ mod tests {
         let policy = network.policy_asset();
 
         let mut builder = TxBuilder::new(&network);
-        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [], fee_rate: 100.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: None, add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
+        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [], post_issuance_recipients: [], fee_rate: 100.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: None, add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
 
         builder = builder.fee_rate(Some(200.0));
-        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [], fee_rate: 200.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: None, add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
+        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [], post_issuance_recipients: [], fee_rate: 200.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: None, add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
 
         builder = builder.add_burn(1000, &policy);
-        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [Recipient { satoshi: 1000, script_pubkey: Script(OP_RETURN), blinding_pubkey: None, asset: 6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d }], fee_rate: 200.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: None, add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
+        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [Recipient { satoshi: 1000, script_pubkey: Script(OP_RETURN), blinding_pubkey: None, asset: 6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d }], post_issuance_recipients: [], fee_rate: 200.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: None, add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
 
         let o = OutPoint::new(
             "[elements]b93dbfb3fa1929b6f82ed46c4a5d8e1c96239ca8b3d9fce00c321d7dadbdf6e0:0",
         )
         .unwrap();
         builder = builder.set_wallet_utxos(vec![o]);
-        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [Recipient { satoshi: 1000, script_pubkey: Script(OP_RETURN), blinding_pubkey: None, asset: 6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d }], fee_rate: 200.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: Some([OutPoint { txid: b93dbfb3fa1929b6f82ed46c4a5d8e1c96239ca8b3d9fce00c321d7dadbdf6e0, vout: 0 }]), add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
+        assert_eq!(builder.to_string(), "TxBuilder { network: Liquid, recipients: [Recipient { satoshi: 1000, script_pubkey: Script(OP_RETURN), blinding_pubkey: None, asset: 6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d }], post_issuance_recipients: [], fee_rate: 200.0, ct_discount: true, issuance_request: None, drain_lbtc: false, drain_to: None, external_utxos: [], selected_utxos: Some([OutPoint { txid: b93dbfb3fa1929b6f82ed46c4a5d8e1c96239ca8b3d9fce00c321d7dadbdf6e0, vout: 0 }]), add_input_rangeproofs: true, is_liquidex_make: false, liquidex_proposals: [] }");
     }
 }

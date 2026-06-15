@@ -38,7 +38,7 @@ use elements::{
 };
 pub use error::Error;
 use get_receive_address::{SingleOrMulti, Variant};
-use lwk_common::{burn_script, Network};
+use lwk_common::Network;
 
 use register_multisig::RegisteredMultisigDetails;
 use sign_liquid_tx::{AssetInfo, Change, Commitment, Contract, Prevout, SignLiquidTxParams};
@@ -109,6 +109,26 @@ pub(crate) fn vec_to_derivation_path(path: &[u32]) -> DerivationPath {
     DerivationPath::from_iter(path.iter().cloned().map(Into::into))
 }
 
+/// Encode a transaction output value for the Jade `tx_input` value_commitment field.
+/// Jade accepts both the 33-byte confidential commitment and the 9-byte explicit encoding
+/// (0x01 prefix + 8-byte little-endian satoshi amount).
+pub(crate) fn encode_value_for_jade(
+    value: &elements::confidential::Value,
+    input_idx: usize,
+) -> Result<Vec<u8>> {
+    match value {
+        elements::confidential::Value::Explicit(amount) => {
+            let mut v = vec![0x01u8];
+            v.extend_from_slice(&amount.to_le_bytes());
+            Ok(v)
+        }
+        elements::confidential::Value::Confidential(commitment) => {
+            Ok(commitment.serialize().to_vec())
+        }
+        _ => Err(Error::NonConfidentialInput(input_idx)),
+    }
+}
+
 pub(crate) fn json_to_cbor(value: &serde_json::Value) -> Result<serde_cbor::Value> {
     // serde_cbor::to_value doesn't exist
     Ok(serde_cbor::from_slice(&serde_cbor::to_vec(&value)?)?)
@@ -122,7 +142,6 @@ fn create_jade_sign_req(
 ) -> Result<SignLiquidTxParams> {
     let tx = pset.extract_tx()?;
     let txn = serialize(&tx);
-    let burn_script = burn_script();
     let mut asset_ids_in_tx = HashSet::new();
     let mut trusted_commitments = vec![];
     let mut changes = vec![];
@@ -131,9 +150,12 @@ fn create_jade_sign_req(
         asset_ids_in_tx.insert(asset_id);
         let mut asset_id = serialize(&asset_id);
         asset_id.reverse(); // Jade want it reversed
-        let unblinded = output.script_pubkey.is_empty() || output.script_pubkey == burn_script;
+        // An output is explicit (unblinded) when it has no blinding key — this covers fee
+        // outputs (empty scriptpubkey), OP_RETURN outputs of any payload, and explicit
+        // covenant outputs that Simplicity must verify in the clear.
+        let unblinded = output.blinding_key.is_none();
         let trusted_commitment = if unblinded {
-            // fee output or burn output
+            // fee, OP_RETURN, or explicit covenant output
             None
         } else {
             Some(Commitment {
