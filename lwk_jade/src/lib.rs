@@ -38,7 +38,7 @@ use elements::{
 };
 pub use error::Error;
 use get_receive_address::{SingleOrMulti, Variant};
-use lwk_common::{burn_script, Network};
+use lwk_common::Network;
 
 use register_multisig::RegisteredMultisigDetails;
 use sign_liquid_tx::{AssetInfo, Change, Commitment, Contract, Prevout, SignLiquidTxParams};
@@ -122,7 +122,6 @@ fn create_jade_sign_req(
 ) -> Result<SignLiquidTxParams> {
     let tx = pset.extract_tx()?;
     let txn = serialize(&tx);
-    let burn_script = burn_script();
     let mut asset_ids_in_tx = HashSet::new();
     let mut trusted_commitments = vec![];
     let mut changes = vec![];
@@ -131,9 +130,12 @@ fn create_jade_sign_req(
         asset_ids_in_tx.insert(asset_id);
         let mut asset_id = serialize(&asset_id);
         asset_id.reverse(); // Jade want it reversed
-        let unblinded = output.script_pubkey.is_empty() || output.script_pubkey == burn_script;
+        // An output is explicit (unblinded) when it has no blinding key — this covers fee
+        // outputs (empty scriptpubkey), OP_RETURN outputs of any payload, and explicit
+        // covenant outputs that Simplicity must verify in the clear.
+        let unblinded = output.blinding_key.is_none();
         let trusted_commitment = if unblinded {
-            // fee output or burn output
+            // fee, OP_RETURN, or explicit covenant output
             None
         } else {
             Some(Commitment {
