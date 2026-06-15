@@ -109,6 +109,26 @@ pub(crate) fn vec_to_derivation_path(path: &[u32]) -> DerivationPath {
     DerivationPath::from_iter(path.iter().cloned().map(Into::into))
 }
 
+/// Encode a transaction output value for the Jade `tx_input` value_commitment field.
+/// Jade accepts both the 33-byte confidential commitment and the 9-byte explicit encoding
+/// (0x01 prefix + 8-byte little-endian satoshi amount).
+pub(crate) fn encode_value_for_jade(
+    value: &elements::confidential::Value,
+    input_idx: usize,
+) -> Result<Vec<u8>> {
+    match value {
+        elements::confidential::Value::Explicit(amount) => {
+            let mut v = vec![0x01u8];
+            v.extend_from_slice(&amount.to_le_bytes());
+            Ok(v)
+        }
+        elements::confidential::Value::Confidential(commitment) => {
+            Ok(commitment.serialize().to_vec())
+        }
+        _ => Err(Error::NonConfidentialInput(input_idx)),
+    }
+}
+
 pub(crate) fn json_to_cbor(value: &serde_json::Value) -> Result<serde_cbor::Value> {
     // serde_cbor::to_value doesn't exist
     Ok(serde_cbor::from_slice(&serde_cbor::to_vec(&value)?)?)
