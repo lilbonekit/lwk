@@ -85,12 +85,7 @@ impl<S: Stream<Error = Error>> Jade<S> {
                     ));
                 };
 
-                let value_commitment = txout
-                    .value
-                    .commitment()
-                    .ok_or(Error::NonConfidentialInput(i))?
-                    .serialize()
-                    .to_vec();
+                let value_commitment = encode_value_for_jade(&txout.value, i)?;
 
                 for (want_public_key, path) in wallet_keys {
                     // TODO? verify `want_public_key` is one of the key of the descriptor?
