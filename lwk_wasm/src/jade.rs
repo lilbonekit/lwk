@@ -176,6 +176,19 @@ impl Jade {
             .map_err(Error::Generic)?)
     }
 
+    /// Releases the Web Serial port so it can be reopened without reloading the page.
+    ///
+    /// `SerialPort.close()` rejects while its `readable`/`writable` streams are still
+    /// locked by our reader/writer, so those locks must be released first. Call this
+    /// before dropping/`free()`-ing the `Jade` instance.
+    pub async fn disconnect(&self) -> Result<(), Error> {
+        self.inner.stream().release().await?;
+        wasm_bindgen_futures::JsFuture::from(self._port.close())
+            .await
+            .map_err(Error::JsVal)?;
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = registerDescriptor)]
     pub async fn register_descriptor(
         &self,
