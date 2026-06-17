@@ -176,12 +176,18 @@ impl Jade {
             .map_err(Error::Generic)?)
     }
 
-    /// Releases the Web Serial port so it can be reopened without reloading the page.
+    /// Logs out of the Jade session and releases the Web Serial port so it can be
+    /// reopened without reloading the page.
+    ///
+    /// The logout is best-effort: if the device is unreachable (e.g. already
+    /// unplugged) we still release the port, since that's the part that must
+    /// succeed for a subsequent `fromSerial()` to work.
     ///
     /// `SerialPort.close()` rejects while its `readable`/`writable` streams are still
     /// locked by our reader/writer, so those locks must be released first. Call this
     /// before dropping/`free()`-ing the `Jade` instance.
     pub async fn disconnect(&self) -> Result<(), Error> {
+        let _ = self.inner.logout().await;
         self.inner.stream().release().await?;
         wasm_bindgen_futures::JsFuture::from(self._port.close())
             .await
