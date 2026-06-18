@@ -15,7 +15,8 @@ use crate::register_multisig::{
 };
 use crate::sign_liquid_tx::{SignLiquidTxParams, TxInputParams};
 use crate::{
-    derivation_path_to_vec, json_to_cbor, try_parse_response, vec_to_derivation_path, Error, Result,
+    derivation_path_to_vec, json_to_cbor, try_parse_response, vec_to_derivation_path, Error,
+    ParseStep, Result,
 };
 use connection::Connection;
 use elements::bitcoin::bip32::{DerivationPath, Fingerprint, Xpub};
@@ -364,7 +365,7 @@ impl Jade {
         if let Some(network) = request.network() {
             self.check_network(network)?;
         }
-        let buf = request.serialize()?;
+        let (buf, id) = request.serialize()?;
 
         let mut conn = self.conn.lock()?;
 
@@ -377,10 +378,15 @@ impl Jade {
             match conn.read(&mut rx[total..]) {
                 Ok(len) => {
                     total += len;
-                    let reader = &rx[..total];
-
-                    if let Some(value) = try_parse_response(reader) {
-                        return value;
+                    loop {
+                        match try_parse_response(&rx[..total], &id) {
+                            ParseStep::Done(value) => return value,
+                            ParseStep::Pending => break,
+                            ParseStep::Stale { consumed } => {
+                                rx.copy_within(consumed..total, 0);
+                                total -= consumed;
+                            }
+                        }
                     }
                 }
                 Err(e) => {

@@ -69,36 +69,72 @@ pub const JADE_DEVICE_IDS: [(u16, u16); 6] = [
 
 const CHANGE_CHAIN: ChildNumber = ChildNumber::Normal { index: 1 };
 
-fn try_parse_response<T>(reader: &[u8]) -> Option<Result<T>>
+/// Outcome of trying to parse a response for an in-flight request out of the
+/// bytes accumulated so far from the transport.
+pub(crate) enum ParseStep<T> {
+    /// Not enough bytes yet to decode a full response, keep reading.
+    Pending,
+    /// A full, well-formed response was decoded, but its `id` doesn't match
+    /// the request we're waiting on. This happens when a previous request's
+    /// response was still buffered on the transport (e.g. after a quick
+    /// reconnect). `consumed` is how many bytes it took up, so the caller can
+    /// drop them and keep looking for the real answer.
+    Stale { consumed: usize },
+    /// A final result, either the answer to our request or an unrecoverable
+    /// parse error.
+    Done(Result<T>),
+}
+
+fn try_parse_response<T>(reader: &[u8], expected_id: &str) -> ParseStep<T>
 where
     T: std::fmt::Debug + serde::de::DeserializeOwned,
 {
-    match serde_cbor::from_reader::<protocol::Response<T>, &[u8]>(reader) {
+    use serde::Deserialize;
+
+    // Decode the envelope with the result left as an untyped CBOR `Value`
+    // first, so a response of unexpected shape doesn't fail to parse before
+    // we even get a chance to check whether it's the response we're after.
+    let mut deserializer = serde_cbor::Deserializer::from_slice(reader);
+    match protocol::Response::<serde_cbor::Value>::deserialize(&mut deserializer) {
         Ok(r) => {
-            if let Some(result) = r.result {
-                log::debug!(
-                    "\n<---\t{:?}\n\t({} bytes) {}",
-                    &result,
-                    reader.len(),
-                    hex::encode(reader)
+            let consumed = deserializer.byte_offset();
+            if r.id != expected_id {
+                log::warn!(
+                    "Discarding stale Jade response (id={}, expected id={})",
+                    r.id,
+                    expected_id
                 );
-                return Some(Ok(result));
+                return ParseStep::Stale { consumed };
+            }
+            if let Some(result) = r.result {
+                return ParseStep::Done(match serde_cbor::value::from_value::<T>(result) {
+                    Ok(result) => {
+                        log::debug!(
+                            "\n<---\t{:?}\n\t({} bytes) {}",
+                            &result,
+                            consumed,
+                            hex::encode(&reader[..consumed])
+                        );
+                        Ok(result)
+                    }
+                    Err(e) => Err(Error::SerdeCbor(e)),
+                });
             }
             if let Some(error) = r.error {
-                return Some(Err(Error::JadeError(error)));
+                return ParseStep::Done(Err(Error::JadeError(error)));
             }
-            return Some(Err(Error::JadeNeitherErrorNorResult));
+            ParseStep::Done(Err(Error::JadeNeitherErrorNorResult))
         }
 
         Err(e) => {
             let res = serde_cbor::from_reader::<serde_cbor::Value, &[u8]>(reader);
             if let Ok(value) = res {
                 log::warn!("The value returned is a valid CBOR, but our structs doesn't map it correctly: {value:?}");
-                return Some(Err(Error::SerdeCbor(e)));
+                return ParseStep::Done(Err(Error::SerdeCbor(e)));
             }
+            ParseStep::Pending
         }
     }
-    None
 }
 
 pub fn derivation_path_to_vec(path: &DerivationPath) -> Vec<u32> {
