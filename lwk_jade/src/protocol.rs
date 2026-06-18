@@ -91,12 +91,18 @@ impl Request {
 }
 
 impl Request {
-    pub fn serialize(self) -> Result<Vec<u8>, crate::Error> {
+    /// Serializes the request, returning the encoded bytes along with the
+    /// random `id` that was embedded in them.
+    ///
+    /// Callers must use this `id` to verify that a response read off the
+    /// transport actually answers *this* request, since the transport may
+    /// still have a stale response from a previous request buffered up.
+    pub fn serialize(self) -> Result<(Vec<u8>, String), crate::Error> {
         let mut rng = rand::thread_rng();
         let id = rng.next_u32().to_string();
         let method = self.to_string();
         let req = FullRequest {
-            id,
+            id: id.clone(),
             method,
             params: self,
         };
@@ -108,7 +114,7 @@ impl Request {
             buf.len(),
             &hex::encode(&buf),
         );
-        Ok(buf)
+        Ok((buf, id))
     }
 }
 
