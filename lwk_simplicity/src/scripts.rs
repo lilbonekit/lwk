@@ -17,7 +17,7 @@ pub fn load_program(source: &str, arguments: Arguments) -> Result<CompiledProgra
         source,
         &UnstableFeatures::all(),
         arguments,
-        true,
+        false,
         Box::new(ElementsJetHinter),
     )
     .map_err(ProgramError::Compilation)?;
