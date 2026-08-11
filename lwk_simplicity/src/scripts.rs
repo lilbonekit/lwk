@@ -1,7 +1,9 @@
+use simplicityhl::ast::ElementsJetHinter;
 use simplicityhl::elements::{taproot, Address, AddressParams, Script};
 
 use simplicityhl::simplicity::bitcoin::{secp256k1, XOnlyPublicKey};
 use simplicityhl::simplicity::hashes::{sha256, Hash, HashEngine};
+use simplicityhl::unstable::UnstableFeatures;
 use simplicityhl::{Arguments, CompiledProgram};
 
 use crate::error::ProgramError;
@@ -11,8 +13,14 @@ use crate::error::ProgramError;
 /// # Errors
 /// Returns error if the program fails to compile.
 pub fn load_program(source: &str, arguments: Arguments) -> Result<CompiledProgram, ProgramError> {
-    let compiled =
-        CompiledProgram::new(source, arguments, true).map_err(ProgramError::Compilation)?;
+    let compiled = CompiledProgram::new_with_unstable(
+        source,
+        &UnstableFeatures::all(),
+        arguments,
+        true,
+        Box::new(ElementsJetHinter),
+    )
+    .map_err(ProgramError::Compilation)?;
 
     Ok(compiled)
 }
