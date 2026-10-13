@@ -17,6 +17,7 @@ mod control_block;
 mod descriptor;
 mod error;
 mod esplora;
+mod fees;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 mod jade;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
@@ -88,7 +89,6 @@ pub use blockdata::transaction::{Transaction, Txid};
 pub use blockdata::tx_in::TxIn;
 #[cfg(feature = "simplicity")]
 pub use blockdata::tx_in_witness::{TxInWitness, TxInWitnessBuilder};
-#[cfg(feature = "simplicity")]
 pub use blockdata::tx_out::TxOut;
 pub use blockdata::tx_out_secrets::TxOutSecrets;
 #[cfg(feature = "simplicity")]
@@ -104,6 +104,7 @@ pub use descriptor::WolletDescriptor;
 pub(crate) use error::Error;
 pub use error::MagicRoutingHint;
 pub use esplora::EsploraClient;
+pub use fees::Fees;
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]
 pub use jade::{Jade, Singlesig};
 #[cfg(all(feature = "serial", target_arch = "wasm32"))]

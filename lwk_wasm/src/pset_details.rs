@@ -1,7 +1,7 @@
 use lwk_wollet::{bitcoin::bip32::KeySource, elements};
 use wasm_bindgen::prelude::*;
 
-use crate::{Address, AssetId, Balance, Txid};
+use crate::{Address, AssetId, Balance, Fees, Txid};
 
 /// The details of a Partially Signed Elements Transaction:
 ///
@@ -101,8 +101,24 @@ impl PsetDetails {
 
 #[wasm_bindgen]
 impl PsetBalance {
+    /// Fee paid by this transaction.
+    ///
+    /// Warning: if there are multiple assets paying fees this function can return an incorrect value.
+    ///
+    /// Deprecated: use `feesIn(assetId)` or `fees()` instead.
     pub fn fee(&self) -> u64 {
-        self.inner.fee
+        *self.inner.fees.values().next().unwrap_or(&0)
+    }
+
+    /// Fees paid by this transaction.
+    pub fn fees(&self) -> Fees {
+        self.inner.fees.clone().into()
+    }
+
+    /// The amount of fee with given asset id
+    #[wasm_bindgen(js_name = feesIn)]
+    pub fn fees_in(&self, asset: AssetId) -> u64 {
+        self.inner.fees_in(&asset.into())
     }
 
     /// The net balance for every asset with respect of the wallet asking the pset details
@@ -283,6 +299,7 @@ mod tests {
         let wollet = Wollet::new(&network, &descriptor).unwrap();
 
         let details = wollet.pset_details(&pset).unwrap();
+        assert_eq!(details.balance().fees_in(network.policy_asset()), 254);
         assert_eq!(details.balance().fee(), 254);
         let balance: HashMap<lwk_wollet::elements::AssetId, i64> =
             serde_wasm_bindgen::from_value(details.balance().balances().entries().unwrap())
